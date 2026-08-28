@@ -90,6 +90,11 @@
       if (!isAlive(tab)) {
         return;
       }
+      // Never touch Zen's hidden bookkeeping tab — every folder keeps one,
+      // labeled "New Tab", and Zen relies on where it sits.
+      if (tab.hasAttribute?.("zen-empty-tab")) {
+        return;
+      }
       const folder = folderOf(tab);
       if (!folder) {
         debug("tab", tab.label, "is not in a Zen folder; nothing to do");
@@ -151,6 +156,43 @@
     lastPlacedChild = new WeakMap();
   }
 
+  // Zen's owned-tabs-in-folder setting only adopts tabs that are ALREADY in a
+  // folder the moment they're created (which is how link-opened tabs arrive).
+  // A real duplicate is created unpinned and ungrouped in the regular tab
+  // list, so Zen never adopts it. For duplicates we therefore do the adoption
+  // ourselves, mirroring Zen's own code for owned tabs (ZenFolders.on_TabOpen:
+  // pin, then add to the folder), and then position it after the original.
+  function adoptDuplicate(tab, parent) {
+    try {
+      if (!isAlive(tab) || !isAlive(parent)) {
+        return;
+      }
+      const folder = folderOf(parent);
+      if (!folder) {
+        debug("duplicated tab's original is not in a folder; nothing to do");
+        return;
+      }
+      if (folderOf(tab) === folder) {
+        // Already adopted (e.g. a future Zen version fixes this) — just place it.
+        maybeReposition(tab);
+        return;
+      }
+      if (tab.group) {
+        debug("duplicate ended up in a different group; leaving it alone");
+        return;
+      }
+      const win = tab.ownerGlobal ?? tab.ownerDocument?.defaultView ?? window;
+      if (!tab.pinned) {
+        win.gBrowser.pinTab(tab);
+      }
+      folder.addTabs([tab]);
+      debug("adopted duplicate", tab.label, "into folder", folder.label);
+      maybeReposition(tab);
+    } catch (e) {
+      console.warn(LOG, "could not adopt duplicate (harmless):", e);
+    }
+  }
+
   // Every way of duplicating a tab (right-click menu, keyboard shortcut)
   // ultimately calls SessionStore.duplicateTab, so that is where we stamp the
   // new tab with its original. SessionStore is one shared object used by all
@@ -171,8 +213,9 @@
           if (newTab && isAlive(aTab)) {
             newTab._ontpParent = aTab;
             debug("duplicate detected:", aTab.label);
-            // Fallback in case no TabGrouped event fires for this tab.
-            setTimeout(() => maybeReposition(newTab), 0);
+            // Zen won't adopt duplicates into folders on its own — do it
+            // (and the positioning) once the current call stack settles.
+            setTimeout(() => adoptDuplicate(newTab, aTab), 0);
           }
         } catch (e) {
           console.warn(LOG, "duplicate hook failed (harmless):", e);
