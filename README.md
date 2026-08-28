@@ -79,8 +79,11 @@ an update, or open an issue.
 - `theme.json` — the metadata Sine reads: what the mod is called, which script
   file to load, and where updates come from.
 
-*Maintainer note: when shipping an update, bump `version` and set `updatedAt`
-in `theme.json` so Sine notices it.*
+*Maintainer note: Sine detects updates by comparing `updatedAt` in
+`theme.json` — the `version` field is display-only. When shipping an update,
+set `updatedAt` to the current date **and time** (e.g.
+`2026-08-28T19:46:03Z`; a bare date makes same-day updates invisible), and
+bump `version` so the settings card reflects it.*
 
 ## License
 
