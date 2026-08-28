@@ -5,14 +5,22 @@
   "homepage": "https://github.com/Nikoneshot/zen-open-next-to-parent",
   "scripts": {
     "open-next-to-parent.uc.mjs": {
-      "include": ["chrome://browser/content/browser.xhtml"]
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ]
     }
   },
   "readme": "https://raw.githubusercontent.com/Nikoneshot/zen-open-next-to-parent/main/README.md",
   "author": "Nikoneshot",
-  "version": "1.0.1",
-  "tags": ["tabs", "folders", "zen"],
+  "version": "1.0.2",
+  "tags": [
+    "tabs",
+    "folders",
+    "zen"
+  ],
   "createdAt": "2026-08-28",
-  "updatedAt": "2026-08-28T19:46:03Z",
-  "fork": ["zen"]
+  "updatedAt": "2026-08-28T19:53:31Z",
+  "fork": [
+    "zen"
+  ]
 }

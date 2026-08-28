@@ -69,10 +69,12 @@
     return tab;
   }
 
-  // Always act through the tab's own window, so the SessionStore hook (which
-  // is installed once, globally) works no matter which window duplicated.
+  // Resolve the tab's window defensively: Zen tab elements have been observed
+  // with an undefined ownerGlobal, and this script's window is correct for
+  // every tab it hears about via its (window-scoped) TabGrouped listener.
   function moveAfter(tab, target) {
-    const gb = tab.ownerGlobal.gBrowser;
+    const win = tab.ownerGlobal ?? tab.ownerDocument?.defaultView ?? window;
+    const gb = win.gBrowser;
     if (typeof gb.moveTabAfter === "function") {
       gb.moveTabAfter(tab, target);
     } else if (typeof target.elementIndex === "number") {
@@ -144,6 +146,11 @@
     }
   }
 
+  function onTabSelect() {
+    // Reset click-order tracking when you switch tabs (mirrors Firefox).
+    lastPlacedChild = new WeakMap();
+  }
+
   // Every way of duplicating a tab (right-click menu, keyboard shortcut)
   // ultimately calls SessionStore.duplicateTab, so that is where we stamp the
   // new tab with its original. SessionStore is one shared object used by all
@@ -173,20 +180,40 @@
         return newTab;
       };
       wrapped._ontpWrapped = true;
+      wrapped._ontpOriginal = original;
       SessionStore.duplicateTab = wrapped;
     } catch (e) {
       console.warn(LOG, "could not hook duplicateTab (harmless):", e);
     }
   }
 
+  // Sine re-imports this script after every mod update. It calls the cleanup
+  // we register here first, so the old copy tears itself down instead of
+  // stacking listeners next to the new one.
+  function registerCleanup() {
+    if (typeof window.addUnloadListener !== "function") {
+      return;
+    }
+    window.addUnloadListener(() => {
+      try {
+        window.removeEventListener("TabGrouped", onTabGrouped);
+        window.removeEventListener("TabSelect", onTabSelect);
+        if (SessionStore?.duplicateTab?._ontpOriginal) {
+          SessionStore.duplicateTab = SessionStore.duplicateTab._ontpOriginal;
+        }
+        debug("unloaded old instance");
+      } catch (e) {
+        console.warn(LOG, "cleanup failed (harmless):", e);
+      }
+    });
+  }
+
   function init() {
     try {
       window.addEventListener("TabGrouped", onTabGrouped);
-      // Reset click-order tracking when you switch tabs (mirrors Firefox).
-      window.addEventListener("TabSelect", () => {
-        lastPlacedChild = new WeakMap();
-      });
+      window.addEventListener("TabSelect", onTabSelect);
       hookDuplicate();
+      registerCleanup();
       console.debug(LOG, "initialized");
     } catch (e) {
       console.warn(LOG, "failed to initialize:", e);
