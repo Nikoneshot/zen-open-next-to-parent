@@ -1,0 +1,18 @@
+{
+  "id": "open-next-to-parent",
+  "name": "Open Next to Parent",
+  "description": "Places link-opened and duplicated tabs right next to their parent tab inside Zen folders.",
+  "homepage": "https://github.com/Nikoneshot/zen-open-next-to-parent",
+  "scripts": {
+    "open-next-to-parent.uc.mjs": {
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "readme": "https://raw.githubusercontent.com/Nikoneshot/zen-open-next-to-parent/main/README.md",
+  "author": "Nikoneshot",
+  "version": "1.0.0",
+  "tags": ["tabs", "folders", "zen"],
+  "createdAt": "2026-08-28",
+  "updatedAt": "2026-08-28",
+  "fork": ["zen"]
+}
