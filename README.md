@@ -40,8 +40,14 @@ end-of-folder behavior back — nothing breaks.
 2. In Zen, go to Settings → Sine Mods, and in the "install from repository"
    field paste this repository's address:
    `https://github.com/Nikoneshot/zen-open-next-to-parent`
-3. Restart Zen (or follow Sine's prompt).
-4. Make sure `zen.folders.owned-tabs-in-folder` is `true` in `about:config`
+3. Allow Sine to run this mod's JavaScript: in `about:config`, set
+   `sine.allow-unsafe-js` to `true` (create it as a Boolean if it doesn't
+   exist). Sine only auto-runs scripts from mods installed through its own
+   store; for repo-link installs like this one, scripts are silently skipped
+   until you opt in. **Note:** this opt-in applies to every repo-installed
+   Sine mod, not just this one — only install mods whose code you trust.
+4. Restart Zen (or follow Sine's prompt).
+5. Make sure `zen.folders.owned-tabs-in-folder` is `true` in `about:config`
    (step 2 of Requirements).
 
 ## Testing checklist

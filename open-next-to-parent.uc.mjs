@@ -16,6 +16,12 @@
 // new tab to sit immediately after its parent. If anything about Zen's
 // internals changes in a future update, every step here fails silently and you
 // simply get today's default behavior back (tab at end of folder).
+//
+// Duplicated tabs don't record which tab they came from, so we also wrap
+// SessionStore.duplicateTab — the single function every duplicate path funnels
+// into (the right-click menu via duplicateTabIn(), and Zen's keyboard shortcut
+// via gBrowser.duplicateTab, which calls it internally) — to stamp the new tab
+// with a reference to its original.
 
 (() => {
   "use strict";
@@ -23,7 +29,8 @@
   const LOG = "[OpenNextToParent]";
 
   // Set the about:config preference `zen.open-next-to-parent.debug` to true to
-  // see what the script is doing in the Browser Console.
+  // see what the script is doing in the Browser Console (enable the "Debug"
+  // log level in the console's filter bar).
   const debug = (...args) => {
     try {
       if (Services.prefs.getBoolPref("zen.open-next-to-parent.debug", false)) {
@@ -62,12 +69,15 @@
     return tab;
   }
 
+  // Always act through the tab's own window, so the SessionStore hook (which
+  // is installed once, globally) works no matter which window duplicated.
   function moveAfter(tab, target) {
-    if (typeof gBrowser.moveTabAfter === "function") {
-      gBrowser.moveTabAfter(tab, target);
+    const gb = tab.ownerGlobal.gBrowser;
+    if (typeof gb.moveTabAfter === "function") {
+      gb.moveTabAfter(tab, target);
     } else if (typeof target.elementIndex === "number") {
       // Same call Zen's own folder code uses to position tabs.
-      gBrowser.moveTabTo(tab, { elementIndex: target.elementIndex + 1 });
+      gb.moveTabTo(tab, { elementIndex: target.elementIndex + 1 });
     } else {
       debug("no usable tab-move API; leaving tab where it is");
     }
@@ -80,6 +90,7 @@
       }
       const folder = folderOf(tab);
       if (!folder) {
+        debug("tab", tab.label, "is not in a Zen folder; nothing to do");
         return;
       }
 
@@ -87,7 +98,12 @@
       // the tab Firefox recorded as having opened this one (link clicks).
       const parent = tab._ontpParent || tab.openerTab || tab.owner;
       delete tab._ontpParent;
-      if (!isAlive(parent) || parent === tab || folderOf(parent) !== folder) {
+      if (!isAlive(parent) || parent === tab) {
+        debug("tab", tab.label, "has no usable parent tab; leaving it alone");
+        return;
+      }
+      if (folderOf(parent) !== folder) {
+        debug("parent of", tab.label, "is not in the same folder; leaving it alone");
         return;
       }
 
@@ -105,6 +121,8 @@
       if (target.nextElementSibling !== tab) {
         moveAfter(tab, target);
         debug("moved", tab.label, "to sit after", anchor.label);
+      } else {
+        debug("tab", tab.label, "is already right after", anchor.label);
       }
       lastPlacedChild.set(parent, tab);
     } catch (e) {
@@ -126,25 +144,39 @@
     }
   }
 
-  // Duplicated tabs don't always carry an opener reference, so we wrap the
-  // duplicate function to remember who the original was.
-  function hookDuplicateTab() {
-    const original = gBrowser.duplicateTab;
-    if (typeof original !== "function") {
-      return;
-    }
-    gBrowser.duplicateTab = function (aTab, ...rest) {
-      const newTab = original.call(this, aTab, ...rest);
-      try {
-        if (newTab && isAlive(aTab)) {
-          newTab._ontpParent = aTab;
-          setTimeout(() => maybeReposition(newTab), 0);
-        }
-      } catch (e) {
-        console.warn(LOG, "duplicate hook failed (harmless):", e);
+  // Every way of duplicating a tab (right-click menu, keyboard shortcut)
+  // ultimately calls SessionStore.duplicateTab, so that is where we stamp the
+  // new tab with its original. SessionStore is one shared object used by all
+  // windows, so guard against wrapping it more than once.
+  function hookDuplicate() {
+    try {
+      if (typeof SessionStore?.duplicateTab !== "function") {
+        debug("SessionStore.duplicateTab not found; duplicates won't reposition");
+        return;
       }
-      return newTab;
-    };
+      if (SessionStore.duplicateTab._ontpWrapped) {
+        return;
+      }
+      const original = SessionStore.duplicateTab;
+      const wrapped = function (aWindow, aTab, ...rest) {
+        const newTab = original.call(this, aWindow, aTab, ...rest);
+        try {
+          if (newTab && isAlive(aTab)) {
+            newTab._ontpParent = aTab;
+            debug("duplicate detected:", aTab.label);
+            // Fallback in case no TabGrouped event fires for this tab.
+            setTimeout(() => maybeReposition(newTab), 0);
+          }
+        } catch (e) {
+          console.warn(LOG, "duplicate hook failed (harmless):", e);
+        }
+        return newTab;
+      };
+      wrapped._ontpWrapped = true;
+      SessionStore.duplicateTab = wrapped;
+    } catch (e) {
+      console.warn(LOG, "could not hook duplicateTab (harmless):", e);
+    }
   }
 
   function init() {
@@ -154,7 +186,7 @@
       window.addEventListener("TabSelect", () => {
         lastPlacedChild = new WeakMap();
       });
-      hookDuplicateTab();
+      hookDuplicate();
       console.debug(LOG, "initialized");
     } catch (e) {
       console.warn(LOG, "failed to initialize:", e);
