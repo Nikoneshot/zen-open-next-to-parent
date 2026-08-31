@@ -7,21 +7,22 @@
 // HOW THIS WORKS
 // --------------
 // Zen's built-in hidden setting `zen.folders.owned-tabs-in-folder` (which you
-// must turn on in about:config) already adopts link-opened and duplicated tabs
-// into the parent tab's folder — but Zen's code appends them at the END of the
-// folder (ZenFolders.mjs calls group.addTabs([tab]), which appends).
+// must turn on in about:config) adopts link-opened tabs into the parent tab's
+// folder — but appends them at the END of the folder (ZenFolders.mjs calls
+// group.addTabs([tab]), which appends). This script listens for Zen's
+// "TabGrouped" event, waits one tick so Zen finishes its own handling, then
+// moves the new tab to sit immediately after its parent.
 //
-// This script listens for Zen's "TabGrouped" event (fired whenever a tab joins
-// a folder), waits one tick so Zen finishes its own handling, then moves the
-// new tab to sit immediately after its parent. If anything about Zen's
-// internals changes in a future update, every step here fails silently and you
-// simply get today's default behavior back (tab at end of folder).
+// Duplicated tabs are different: they are created unpinned and ungrouped in
+// the regular tab list, so Zen never adopts them at all. We wrap the two
+// per-window entry points for duplication — the window-global duplicateTabIn()
+// (used by the tab context menu) and gBrowser.duplicateTab() (used by Zen's
+// keyboard shortcut) — to flag that a duplicate is coming, claim the next
+// TabOpen as that duplicate, then adopt it into the parent's folder ourselves
+// (pin + addTabs, mirroring Zen's own adoption code) and position it.
 //
-// Duplicated tabs don't record which tab they came from, so we also wrap
-// SessionStore.duplicateTab — the single function every duplicate path funnels
-// into (the right-click menu via duplicateTabIn(), and Zen's keyboard shortcut
-// via gBrowser.duplicateTab, which calls it internally) — to stamp the new tab
-// with a reference to its original.
+// If a Zen update changes any internal this script relies on, every step fails
+// silently and you get default behavior back — nothing breaks.
 
 (() => {
   "use strict";
@@ -39,14 +40,28 @@
     } catch {}
   };
 
+  // Short description of a tab for debug lines.
+  const tag = tab => {
+    try {
+      return `"${tab?.label}"[${tab?.pinned ? "P" : ""}${tab?.hidden ? "H" : ""}${
+        tab?.hasAttribute?.("zen-empty-tab") ? "E" : ""
+      }]`;
+    } catch {
+      return "<?>";
+    }
+  };
+
   // Remembers, for each parent tab, the most recent child we placed — so that
-  // opening several links in a row keeps them in the order you clicked them
-  // (each new tab goes after the previous one, not squeezed in reverse order
-  // right after the parent). Cleared whenever you switch tabs, matching how
-  // Firefox itself handles "related tab" ordering.
+  // opening several links in a row keeps them in the order you clicked them.
+  // Cleared whenever you switch tabs, matching how Firefox itself handles
+  // "related tab" ordering.
   let lastPlacedChild = new WeakMap();
 
   const isAlive = tab => tab && tab.isConnected && !tab.closing;
+
+  // Zen marks its per-folder hidden bookkeeping tab with either of these
+  // (ZenFolders.mjs checks `tab.hidden || tab.hasAttribute("zen-empty-tab")`).
+  const isBookkeeping = tab => tab.hidden || tab.hasAttribute?.("zen-empty-tab");
 
   // The Zen folder a tab belongs to, looking through split-view groups
   // (a split view is itself a small group that can sit inside a folder).
@@ -71,10 +86,11 @@
 
   // Resolve the tab's window defensively: Zen tab elements have been observed
   // with an undefined ownerGlobal, and this script's window is correct for
-  // every tab it hears about via its (window-scoped) TabGrouped listener.
+  // every tab it hears about via its (window-scoped) listeners.
+  const windowFor = tab => tab.ownerGlobal ?? tab.ownerDocument?.defaultView ?? window;
+
   function moveAfter(tab, target) {
-    const win = tab.ownerGlobal ?? tab.ownerDocument?.defaultView ?? window;
-    const gb = win.gBrowser;
+    const gb = windowFor(tab).gBrowser;
     if (typeof gb.moveTabAfter === "function") {
       gb.moveTabAfter(tab, target);
     } else if (typeof target.elementIndex === "number") {
@@ -90,27 +106,22 @@
       if (!isAlive(tab)) {
         return;
       }
-      // Never touch Zen's hidden bookkeeping tab — every folder keeps one,
-      // labeled "New Tab", and Zen relies on where it sits.
-      if (tab.hasAttribute?.("zen-empty-tab")) {
-        return;
-      }
       const folder = folderOf(tab);
       if (!folder) {
-        debug("tab", tab.label, "is not in a Zen folder; nothing to do");
+        debug("tab", tag(tab), "is not in a Zen folder; nothing to do");
         return;
       }
 
-      // The parent: set explicitly by the duplicate-tab hook below, otherwise
+      // The parent: set explicitly by the duplicate detection below, otherwise
       // the tab Firefox recorded as having opened this one (link clicks).
       const parent = tab._ontpParent || tab.openerTab || tab.owner;
       delete tab._ontpParent;
       if (!isAlive(parent) || parent === tab) {
-        debug("tab", tab.label, "has no usable parent tab; leaving it alone");
+        debug("tab", tag(tab), "has no usable parent tab; leaving it alone");
         return;
       }
       if (folderOf(parent) !== folder) {
-        debug("parent of", tab.label, "is not in the same folder; leaving it alone");
+        debug("parent of", tag(tab), "is not in the same folder; leaving it alone");
         return;
       }
 
@@ -127,9 +138,9 @@
       }
       if (target.nextElementSibling !== tab) {
         moveAfter(tab, target);
-        debug("moved", tab.label, "to sit after", anchor.label);
+        debug("moved", tag(tab), "to sit after", tag(anchor), "in folder", folder.label);
       } else {
-        debug("tab", tab.label, "is already right after", anchor.label);
+        debug("tab", tag(tab), "is already right after", tag(anchor), "in folder", folder.label);
       }
       lastPlacedChild.set(parent, tab);
     } catch (e) {
@@ -140,7 +151,7 @@
   function onTabGrouped(event) {
     try {
       const tab = event.detail;
-      if (!folderOf(tab)) {
+      if (!folderOf(tab) || isBookkeeping(tab)) {
         return;
       }
       // Let Zen completely finish its own adoption (pinning + appending),
@@ -156,12 +167,10 @@
     lastPlacedChild = new WeakMap();
   }
 
-  // Zen's owned-tabs-in-folder setting only adopts tabs that are ALREADY in a
-  // folder the moment they're created (which is how link-opened tabs arrive).
-  // A real duplicate is created unpinned and ungrouped in the regular tab
-  // list, so Zen never adopts it. For duplicates we therefore do the adoption
-  // ourselves, mirroring Zen's own code for owned tabs (ZenFolders.on_TabOpen:
-  // pin, then add to the folder), and then position it after the original.
+  // Zen won't adopt duplicates into folders on its own (its adoption only
+  // reacts to tabs that are already inside a folder when they open). Mirror
+  // Zen's own adoption for owned tabs — pin, then add to the folder — and
+  // then position the copy after its original.
   function adoptDuplicate(tab, parent) {
     try {
       if (!isAlive(tab) || !isAlive(parent)) {
@@ -181,52 +190,83 @@
         debug("duplicate ended up in a different group; leaving it alone");
         return;
       }
-      const win = tab.ownerGlobal ?? tab.ownerDocument?.defaultView ?? window;
       if (!tab.pinned) {
-        win.gBrowser.pinTab(tab);
+        windowFor(tab).gBrowser.pinTab(tab);
       }
       folder.addTabs([tab]);
-      debug("adopted duplicate", tab.label, "into folder", folder.label);
+      debug("adopted duplicate", tag(tab), "into folder", folder.label);
       maybeReposition(tab);
     } catch (e) {
       console.warn(LOG, "could not adopt duplicate (harmless):", e);
     }
   }
 
-  // Every way of duplicating a tab (right-click menu, keyboard shortcut)
-  // ultimately calls SessionStore.duplicateTab, so that is where we stamp the
-  // new tab with its original. SessionStore is one shared object used by all
-  // windows, so guard against wrapping it more than once.
+  // --- duplicate detection ---------------------------------------------
+  // Wrapping is per-window and directly verifiable: duplicateTabIn() is the
+  // window-global the tab context menu calls, and gBrowser.duplicateTab() is
+  // what Zen's keyboard shortcut uses. Each wrapper raises a short-lived
+  // "duplicate incoming" flag; the next TabOpen in this window claims it.
+  let pendingDuplicate = null; // { parent, until }
+  let originalDuplicateTabIn = null;
+  let originalGBDuplicateTab = null;
+
+  function markPendingDuplicate(parent) {
+    if (isAlive(parent)) {
+      pendingDuplicate = { parent, until: Date.now() + 1000 };
+    }
+  }
+
+  function onTabOpen(event) {
+    try {
+      if (!pendingDuplicate) {
+        return;
+      }
+      if (Date.now() > pendingDuplicate.until) {
+        pendingDuplicate = null;
+        return;
+      }
+      const tab = event.target;
+      if (isBookkeeping(tab)) {
+        return;
+      }
+      const { parent } = pendingDuplicate;
+      pendingDuplicate = null;
+      debug("duplicate of", tag(parent), "detected:", tag(tab));
+      tab._ontpParent = parent;
+      setTimeout(() => adoptDuplicate(tab, parent), 0);
+    } catch (e) {
+      console.warn(LOG, "TabOpen handler failed (harmless):", e);
+    }
+  }
+
   function hookDuplicate() {
     try {
-      if (typeof SessionStore?.duplicateTab !== "function") {
-        debug("SessionStore.duplicateTab not found; duplicates won't reposition");
-        return;
+      if (typeof window.duplicateTabIn === "function") {
+        originalDuplicateTabIn = window.duplicateTabIn;
+        window.duplicateTabIn = function (aTab, ...rest) {
+          try {
+            markPendingDuplicate(aTab);
+          } catch {}
+          return originalDuplicateTabIn.call(this, aTab, ...rest);
+        };
       }
-      if (SessionStore.duplicateTab._ontpWrapped) {
-        return;
+      if (typeof gBrowser?.duplicateTab === "function") {
+        originalGBDuplicateTab = gBrowser.duplicateTab;
+        gBrowser.duplicateTab = function (aTab, ...rest) {
+          try {
+            markPendingDuplicate(aTab);
+          } catch {}
+          return originalGBDuplicateTab.call(this, aTab, ...rest);
+        };
       }
-      const original = SessionStore.duplicateTab;
-      const wrapped = function (aWindow, aTab, ...rest) {
-        const newTab = original.call(this, aWindow, aTab, ...rest);
-        try {
-          if (newTab && isAlive(aTab)) {
-            newTab._ontpParent = aTab;
-            debug("duplicate detected:", aTab.label);
-            // Zen won't adopt duplicates into folders on its own — do it
-            // (and the positioning) once the current call stack settles.
-            setTimeout(() => adoptDuplicate(newTab, aTab), 0);
-          }
-        } catch (e) {
-          console.warn(LOG, "duplicate hook failed (harmless):", e);
-        }
-        return newTab;
-      };
-      wrapped._ontpWrapped = true;
-      wrapped._ontpOriginal = original;
-      SessionStore.duplicateTab = wrapped;
+      debug(
+        "duplicate hooks installed: duplicateTabIn=" +
+          !!originalDuplicateTabIn +
+          " gBrowser.duplicateTab=" +
+          !!originalGBDuplicateTab
+      );
     } catch (e) {
-      console.warn(LOG, "could not hook duplicateTab (harmless):", e);
+      console.warn(LOG, "could not hook duplication (harmless):", e);
     }
   }
 
@@ -241,8 +281,12 @@
       try {
         window.removeEventListener("TabGrouped", onTabGrouped);
         window.removeEventListener("TabSelect", onTabSelect);
-        if (SessionStore?.duplicateTab?._ontpOriginal) {
-          SessionStore.duplicateTab = SessionStore.duplicateTab._ontpOriginal;
+        window.removeEventListener("TabOpen", onTabOpen);
+        if (originalDuplicateTabIn) {
+          window.duplicateTabIn = originalDuplicateTabIn;
+        }
+        if (originalGBDuplicateTab && typeof gBrowser === "object") {
+          gBrowser.duplicateTab = originalGBDuplicateTab;
         }
         debug("unloaded old instance");
       } catch (e) {
@@ -255,6 +299,7 @@
     try {
       window.addEventListener("TabGrouped", onTabGrouped);
       window.addEventListener("TabSelect", onTabSelect);
+      window.addEventListener("TabOpen", onTabOpen);
       hookDuplicate();
       registerCleanup();
       console.debug(LOG, "initialized");

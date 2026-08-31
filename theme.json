@@ -12,14 +12,14 @@
   },
   "readme": "https://raw.githubusercontent.com/Nikoneshot/zen-open-next-to-parent/main/README.md",
   "author": "Nikoneshot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "tags": [
     "tabs",
     "folders",
     "zen"
   ],
   "createdAt": "2026-08-28",
-  "updatedAt": "2026-08-28T20:17:12Z",
+  "updatedAt": "2026-08-28T20:44:04Z",
   "fork": [
     "zen"
   ]
