@@ -190,11 +190,17 @@
         debug("duplicate ended up in a different group; leaving it alone");
         return;
       }
+      // Pin through the normal pipeline: this fires TabPinned, which lets
+      // Zen's pinned-tab manager create the stored-pin-state record the
+      // duplicate is missing (without it, Zen ejects the tab from the folder).
       if (!tab.pinned) {
         windowFor(tab).gBrowser.pinTab(tab);
       }
       folder.addTabs([tab]);
       debug("adopted duplicate", tag(tab), "into folder", folder.label);
+      // The parent marker is consumed on first use — re-stamp it so this
+      // repositioning pass knows who the parent is.
+      tab._ontpParent = parent;
       maybeReposition(tab);
     } catch (e) {
       console.warn(LOG, "could not adopt duplicate (harmless):", e);
@@ -233,7 +239,15 @@
       pendingDuplicate = null;
       debug("duplicate of", tag(parent), "detected:", tag(tab));
       tab._ontpParent = parent;
+      // First pass right away; second pass after Zen's pinned-tab machinery
+      // has settled. A duplicate is born pinned inside the folder but lacks
+      // Zen's stored pin state, so Zen ejects it shortly after creation —
+      // the settle pass catches that and re-adopts it properly.
       setTimeout(() => adoptDuplicate(tab, parent), 0);
+      setTimeout(() => {
+        debug("settle pass for", tag(tab));
+        adoptDuplicate(tab, parent);
+      }, 600);
     } catch (e) {
       console.warn(LOG, "TabOpen handler failed (harmless):", e);
     }
